@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import time
 import os
+from sklearn.utils import shuffle
 import cnn_helper
 
 #%%
@@ -19,7 +20,7 @@ with open(training_file, mode='rb') as f:
 with open(testing_file, mode='rb') as f:
     test = pickle.load(f)
 
-   
+
 X_train, y_train = train['features'], train['labels']
 X_test, y_test = test['features'], test['labels']
 
@@ -46,15 +47,15 @@ print("Number of classes =", n_classes)
 
 #%%
 ### Data exploration visualization goes here.
-### Feel free to use as many code cells as needed.some suggestions include: 
+### Feel free to use as many code cells as needed.some suggestions include:
 ### plotting traffic signs images, plotting the count of each sign
 
 img = X_train[np.random.randint(0,n_train,15)]
-img_show = np.vstack((np.hstack((img[0],img[1],img[2],img[3],img[4])), 
+img_show = np.vstack((np.hstack((img[0],img[1],img[2],img[3],img[4])),
                       np.hstack((img[5],img[6],img[7],img[8],img[9])),
                       np.hstack((img[10],img[11],img[12],img[13],img[14]))))
 
-fig, axes = plt.subplots(nrows=2,ncols=1)  
+fig, axes = plt.subplots(nrows=2,ncols=1)
 axes[0].imshow(img_show)
 axes[1].hist(y_train, n_classes)
 plt.show()
@@ -62,141 +63,133 @@ plt.show()
 
 #%%
 ###preprocessing
-import preprocessor
-#to gray scale
-X_train = preprocessor.to_grayscale(X_train)
-X_test = preprocessor.to_grayscale(X_test)
-
-#augment the training data using translation and rotation
-X_train, y_train = preprocessor.augment_data(X_train, y_train)
+from sklearn.model_selection import train_test_split
+X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.20, random_state=1)
 n_train = X_train.shape[0]
-print("!!!!!Number of augmented training examples =", n_train)
+n_val = X_val.shape[0]
+print("Now divide the training data as %d training items and %d validation items." % (n_train, n_val))
 
 ##normalization
-X_train= preprocessor.normalize(X_train)
-X_test = preprocessor.normalize(X_test)
+#X_train= (X_train-128)/128.0
+#X_val= (X_val-128)/128.0
+#X_test = (X_test-128)/128.0
 
-##one-hot encoding
-y_train_one_hot = preprocessor.one_hot_encoding(y_train,n_classes)
-y_test_one_hot = preprocessor.one_hot_encoding(y_test,n_classes)
+X_train = X_train.astype('float32')
+X_val = X_val.astype('float32')
+X_test = X_test.astype('float32')
+X_train = X_train / 255 - 0.5
+X_val = X_val / 255 - 0.5
+X_test = X_test / 255 - 0.5
+
 
 #%%
 def run_training():
-  x = tf.placeholder("float", shape=[None, X_train.shape[1], X_train.shape[2], X_train.shape[3]])
-  y_ = tf.placeholder("float", shape=[None, n_classes])
+  features = tf.placeholder("float", shape=[None]+ list(X_train.shape[1:]))
+  labels = tf.placeholder("int64", shape=(None,))
   keep_prob = tf.placeholder("float")
   # Build a Graph that computes predictions from the inference model.
-  logits = cnn_helper.inference(x,hidden1_units=32, hidden2_units=64, fc_units=1024, keep_prob_ph =keep_prob)
-
+  logits = cnn_helper.inference(features,conv1_out=32,conv2_out=64, fc1_out=256, keep_prob =keep_prob)
   # Add to the Graph the Ops for loss calculation.
-  loss_op= cnn_helper.loss(logits, y_)
-
-  # Add to the Graph the Ops that calculate and apply gradients.
-  train_op = cnn_helper.training(loss_op, 1e-4)
-
+  loss_op= cnn_helper.loss(logits, labels)
   # Add the Op to compare the logits to the labels during evaluation.
-  eval_op = cnn_helper.evaluation(logits, y_)
-
-  # Build the summary Tensor based on the TF collection of Summaries.
-  summary = tf.merge_all_summaries()
-
+  evaluation_op = cnn_helper.evaluation(logits, labels)
+  # Add to the Graph the Ops that calculate and apply gradients.
+  train_op = cnn_helper.training(loss_op, 0.01)
   # Add the variable initializer Op.
   init = tf.global_variables_initializer()
 
+  # Build the summary Tensor based on the TF collection of Summaries.
+  summary = tf.merge_all_summaries()
   # Create a saver for writing training checkpoints.
   saver = tf.train.Saver()
 
   # Create a session for running Ops on the Graph.
   sess = tf.Session()
-
   # Instantiate a SummaryWriter to output summaries and the Graph.
   summary_writer = tf.train.SummaryWriter("./log", sess.graph)
-
   # And then after everything is built:
-
   # Run the Op to initialize the variables.
   sess.run(init)
 
+  epochs =50
   batch_size=256
-  max_steps =20000
-  # Start the training loop.
-  for step in range(max_steps):
-    start_time = time.time()
-    # Fill a feed dictionary with the actual set of images and labels
-    # for this particular training step.
-    batch = cnn_helper.get_next_batch_train(X_train, y_train_one_hot, batch_size)
-    feed_dict={x: batch[0], y_: batch[1], keep_prob: 0.5}
+  global_step=0
+  checkpoint_file = os.path.join("./log/", 'model.ckpt')
+  for epoch in range(epochs):
+        # training
+        X_train_temp, y_train_temp = shuffle(X_train, y_train)
+        start_time = time.time()
+        for offset in range(0, X_train_temp.shape[0], batch_size):
+            end = offset + batch_size
+            feed_dict={features: X_train_temp[offset:end], labels: y_train_temp[offset:end], keep_prob:0.5}
+            sess.run(train_op, feed_dict=feed_dict)
 
-    # Run one step of the model.  The return values are the activations
-    # from the `train_op` (which is discarded) and the `loss` Op.  To
-    # inspect the values of your Ops or variables, you may include them
-    # in the list passed to sess.run() and the value tensors will be
-    # returned in the tuple from the call.
-    _, loss_value = sess.run([train_op, loss_op],feed_dict=feed_dict)
+            global_step +=1
+            if global_step %100==0:
+              summary_str = sess.run(summary, feed_dict=feed_dict)
+              summary_writer.add_summary(summary_str, global_step)
+              summary_writer.flush()
+            if global_step %2000==0:
+              saver.save(sess, checkpoint_file, global_step)
 
-    duration = time.time() - start_time
 
-    # Write the summaries and print an overview fairly often.
-    if step % 100 == 0:
-      # Print status to stdout.
-      print('Step %d: loss = %.2f (%.3f sec)' % (step, loss_value, duration))
-      # Update the events file.
-      summary_str = sess.run(summary, feed_dict=feed_dict)
-      summary_writer.add_summary(summary_str, step)
-      summary_writer.flush()
+        val_loss, val_acc = cnn_helper.do_eval(X_val, y_val, batch_size, sess, loss_op, evaluation_op, features, labels, keep_prob)
+        print("Epoch", epoch+1)
+        print("Time: %.3f seconds" % (time.time() - start_time))
+        print("Validation Loss =", val_loss)
+        print("Validation Accuracy =", val_acc)
+        print("==================================")
 
-    # Save a checkpoint 
-    if (step + 1) % 1000 == 0 or (step + 1) == max_steps:
-      checkpoint_file = os.path.join("./log/", 'model.ckpt')
-      saver.save(sess, checkpoint_file, global_step=step)
-      
-    # Evaluate the model periodically.
-    if (step + 1) % 2000 == 0 or (step + 1) == max_steps:
-      print('Training Data Eval:')
-      cnn_helper.do_eval(sess, eval_op, x, y_, keep_prob, X_train[0:39209], y_train_one_hot[0:39209], 1000)
-      # Evaluate against the test set.
-      print('Test Data Eval:')
-      cnn_helper.do_eval(sess, eval_op, x, y_, keep_prob, X_test,  y_test_one_hot, 1000)
+  summary_str = sess.run(summary, feed_dict=feed_dict)
+  summary_writer.add_summary(summary_str, global_step)
+  summary_writer.flush()
+  saver.save(sess, checkpoint_file)
+
+  test_loss, test_acc = cnn_helper.do_eval(X_test, y_test, batch_size, sess, loss_op, evaluation_op, features, labels, keep_prob)
+  print("Test Loss =", test_loss)
+  print("Test Accuracy =", test_acc)
+  print("")
   sess.close()
 
-#%% 
+#%%
 def run_prediction():
-  from scipy.misc import imread, imresize    
+  from scipy.misc import imread, imresize
   imgs = []
-  fig, axes = plt.subplots(nrows=1,ncols=5)  
+  fig, axes = plt.subplots(nrows=1,ncols=5)
 
   for i in range(5):
-    path = './test_images/{0}.jpg'.format(i+1) 
+    path = './test_images/{0}.jpg'.format(i+1)
     img = imread(path)
     imgs.append(img)
     axes[i].imshow(img)
-  plt.show()  
-  
-  X = np.empty(shape=[5,32,32,1])
-  for i in range(5):      
+  plt.show()
+
+  X = np.empty(shape=[5,32,32,3])
+  for i in range(5):
     img = imresize(imgs[i], (32,32))
-    img_gray = preprocessor.to_grayscale(img)
-    img_gray_normalized = preprocessor.normalize(img_gray)
-    X[i] = img_gray_normalized
-  
-  x = tf.placeholder("float", [None, 32, 32, 1])
+    img_normalized = img/255.0 -0.5
+    X[i] = img_normalized
+
+  features = tf.placeholder("float", [None, 32, 32, 3])
   keep_prob = tf.placeholder("float")
   # Build a Graph that computes predictions from the inference model.
-  logits = cnn_helper.inference(x,hidden1_units=32, hidden2_units=64, fc_units=1024, keep_prob_ph =keep_prob)
+  logits = cnn_helper.inference(features,conv1_out=32,conv2_out=64, fc1_out=256, keep_prob =keep_prob)
   probs = tf.nn.softmax(logits)
   top_k_op = tf.nn.top_k(probs, 5)
 
   saver = tf.train.Saver()
-  
+  path ="./log_model/model.ckpt"
+  if os.path.exists("./log/model.ckpt.index"):
+    path ="./log/model.ckpt"
   with tf.Session() as sess:
-    saver.restore(sess, "./log_model/model.ckpt-19999")
+    saver.restore(sess, path)
     print("Model restored")
-    values, indices = sess.run(top_k_op, feed_dict={x:X, keep_prob:1})
-    
+    values, indices = sess.run(top_k_op, feed_dict={features:X, keep_prob:1})
+
   import csv
   reader = csv.reader(open('signnames.csv', newline=''), delimiter=',')
   sign_map = {row[0]: row[1] for row in reader}
- 
+
   for i in range(5):
     plt.figure(i)
     plt.imshow(np.uint8(imgs[i]))
@@ -207,9 +200,9 @@ def run_prediction():
       print("%.4f: %s" % (probs[k], sign_map[str(signs[k])]))
 
 
-#%% 
-mode = "train"  #"predict" "train"
-if __name__ == '__main__': 
+#%%
+mode = "predict"  #"predict" "train"
+if __name__ == '__main__':
   if mode == "train":
     if tf.gfile.Exists("./log/"):
       tf.gfile.DeleteRecursively("./log/")
@@ -220,7 +213,7 @@ if __name__ == '__main__':
     print("total time for training: %.2f sec" % training_time)
   else:
     run_prediction()
-    
-                
-        
+
+
+
 
